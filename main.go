@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 )
 
 func sendRequest(url string) (*http.Response, error) {
@@ -83,8 +84,17 @@ func filterReleases(releases []any) []map[string]any {
 			// Add the desired fields to the filtered release map
 			filteredRelease["title"] = releaseMap["title"]
 			filteredRelease["year"] = releaseMap["year"]
-			filteredRelease["genres"] = releaseMap["genres"]
-			filteredRelease["trackList"] = releaseMap["tracklist"]
+			filteredRelease["genre"] = releaseMap["genres"].([]any)[0]
+			var trackInfo string
+			tracks := releaseMap["tracklist"].([]any)
+			for i, track := range tracks {
+				trackString, _ := interfaceToString(track.(map[string]any)["title"])
+				trackInfo += trackString
+				if i < len(tracks)-1 {
+					trackInfo += "\n"
+				}
+			}
+			filteredRelease["additional"] = trackInfo
 			// Add other fields you want to include
 
 			// Append the filtered release to the result
@@ -110,8 +120,10 @@ func beautifyJson(value any) {
 		fmt.Println("Error formatting JSON:", err)
 		return
 	}
-
-	fmt.Println(string(prettyJSON))
+	err = os.WriteFile("data.json", prettyJSON, 1)
+	if err != nil {
+		fmt.Println(err)
+	}
 }
 
 func main() {
