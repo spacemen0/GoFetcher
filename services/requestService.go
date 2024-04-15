@@ -8,8 +8,20 @@ import (
 )
 
 type Record struct {
-	Url   any
-	Title any
+	url   string
+	title string
+}
+
+func (r Record) FilterValue() string {
+	return r.title
+}
+
+func (r Record) Title() string {
+	return r.title
+}
+
+func (r Record) Description() string {
+	return r.url
 }
 
 func SendRequest(url string) (*http.Response, error) {
@@ -48,8 +60,8 @@ func FilterMasterURLs(data any) []Record {
 				if releaseMap["type"] == "master" {
 					masterUrls = append(masterUrls,
 						Record{
-							Url:   releaseMap["resource_url"],
-							Title: releaseMap["title"],
+							url:   releaseMap["resource_url"].(string),
+							title: releaseMap["title"].(string),
 						})
 				}
 			}
@@ -122,7 +134,7 @@ func interfaceToString(value any) (string, bool) {
 	return str, true // Return the string and true indicating successful conversion
 }
 
-func BeautifyJson(value any) {
+func WriteToFile(value any) {
 	prettyJSON, err := json.MarshalIndent(value, "", "    ")
 	if err != nil {
 		fmt.Println("Error formatting JSON:", err)
