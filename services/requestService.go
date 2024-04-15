@@ -7,6 +7,11 @@ import (
 	"os"
 )
 
+type Record struct {
+	Url   any
+	Title any
+}
+
 func SendRequest(url string) (*http.Response, error) {
 	// Create a new GET request
 	req, err := http.NewRequest("GET", url, nil)
@@ -34,14 +39,18 @@ func DecodeJSON(resp *http.Response) (any, error) {
 	return data, nil
 }
 
-func FilterMasterURLs(data any) []any {
-	var masterUrls []any
+func FilterMasterURLs(data any) []Record {
+	var masterUrls []Record
 
 	if releases, ok := data.(map[string]any)["releases"]; ok {
 		for _, release := range releases.([]any) {
 			if releaseMap, ok := release.(map[string]any); ok {
 				if releaseMap["type"] == "master" {
-					masterUrls = append(masterUrls, releaseMap["resource_url"])
+					masterUrls = append(masterUrls,
+						Record{
+							Url:   releaseMap["resource_url"],
+							Title: releaseMap["title"],
+						})
 				}
 			}
 		}
