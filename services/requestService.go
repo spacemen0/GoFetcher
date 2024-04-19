@@ -71,11 +71,10 @@ func FilterMasterURLs(data any) []Record {
 	return masterUrls
 }
 
-func ProcessMasterURLs(masterUrls []any) []any {
+func ProcessMasterURLs(masterUrls []string) []any {
 	var releases []any
 
-	for _, masterUrl := range masterUrls {
-		var url, _ = interfaceToString(masterUrl)
+	for _, url := range masterUrls {
 		resp, err := SendRequest(url)
 		if err != nil {
 			fmt.Println("Error:", err)
@@ -140,7 +139,7 @@ func WriteToFile(value any) {
 		fmt.Println("Error formatting JSON:", err)
 		return
 	}
-	err = os.WriteFile("data.json", prettyJSON, 1)
+	err = os.WriteFile("data.json", prettyJSON, 0644)
 	if err != nil {
 		fmt.Println(err)
 	}

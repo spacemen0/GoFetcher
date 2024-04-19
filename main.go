@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"time"
 )
 
 func forgeSearch(artist string) string {
@@ -43,20 +44,21 @@ func getRecords(url string) []services.Record {
 	return services.FilterMasterURLs(data)
 }
 
-func extractUrl(records []services.Record) []any {
-	var masterUrls []any
+func extractUrl(records []services.Record) []string {
+	var masterUrls []string
 	for _, record := range records {
 		masterUrls = append(masterUrls, record.Description())
 	}
 	return masterUrls
 }
 
-func writeRelease(masterUrls []any) {
-	services.WriteToFile(services.FilterReleases(services.ProcessMasterURLs(masterUrls)))
+func writeRelease(masterUrls []services.Record) {
+	services.WriteToFile(services.FilterReleases(services.ProcessMasterURLs(extractUrl(masterUrls))))
 }
 
 func main() {
-	p := tea.NewProgram(initialModel(), tea.WithAltScreen())
+	m := initialModel()
+	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		log.Fatal(err)
 	}
@@ -75,7 +77,7 @@ type model struct {
 	state   State
 	list    list.Model
 	spinner spinner.Model
-	choices []string
+	choices []services.Record
 }
 
 var docStyle = lipgloss.NewStyle().Margin(1, 2)
@@ -86,7 +88,7 @@ const (
 	SelectArtist
 	Fetching
 	SelectReleases
-	WriteFile
+	Done
 )
 
 func initialModel() *model {
@@ -121,7 +123,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.state == Searching|Fetching {
 		return m, nil
 	}
-	updateList := func(m *model, msg2 tea.Msg) tea.Cmd {
+	updateList := func(m *model) tea.Cmd {
 		return func() tea.Msg {
 			m.records = getRecords(forgeSearch(m.artist.Value()))
 			items := make([]list.Item, len(m.records))
@@ -129,12 +131,21 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				items[i] = record
 			}
 			m.list.SetItems(items)
-			m.list.Title = "Press Enter to select releases"
+			m.list.Title = "Press Enter to select releases, Space to confirm selection"
 			m.state = SelectReleases
 			_, cmd := m.list.Update(msg)
 			return cmd
 		}
-
+	}
+	fetchReleases := func(m *model) tea.Cmd {
+		return func() tea.Msg {
+			writeRelease(m.choices)
+			m.state = Done
+			_, cmd := m.spinner.Update(spinner.TickMsg{
+				Time: time.Now(),
+			})
+			return cmd
+		}
 	}
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -145,12 +156,24 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch m.state {
 			case InputArtist:
 				m.state = Searching
-
-				return m, tea.Batch(m.spinner.Tick, updateList(m, msg))
+				return m, tea.Batch(m.spinner.Tick, updateList(m))
 			case SelectReleases:
-				m.choices = append(m.choices, m.list.Items()[m.list.Cursor()].FilterValue())
+				item := m.list.Items()[m.list.Cursor()]
+				m.choices = append(m.choices, item.(services.Record))
 				m.list.RemoveItem(m.list.Cursor())
 				return m, nil
+			default:
+				return m, nil
+			}
+		case tea.KeySpace:
+			switch m.state {
+			case InputArtist:
+				m.artist, cmd = m.artist.Update(msg)
+				return m, cmd
+			case SelectReleases:
+				m.state = Fetching
+				m.spinner, cmd = m.spinner.Update(msg)
+				return m, tea.Batch(cmd, fetchReleases(m))
 			default:
 				return m, nil
 			}
@@ -202,8 +225,8 @@ func (m *model) View() string {
 		return fmt.Sprintf("\n\n   %s Fetching Releases...\n\n", m.spinner.View())
 	case SelectReleases:
 		return docStyle.Render(m.list.View())
-	case WriteFile:
-		return fmt.Sprintf("\n\n   All done!\n\n")
+	case Done:
+		return fmt.Sprintf("\n\n   All done!\n\n%s", "   (ctrl+c to quit)")
 	}
 
 }
