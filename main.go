@@ -54,7 +54,7 @@ func writeRelease(masterUrls []any) {
 }
 
 func main() {
-	p := tea.NewProgram(initialModel())
+	p := tea.NewProgram(initialModel(), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		log.Fatal(err)
 	}
@@ -86,7 +86,7 @@ const (
 	WriteFile
 )
 
-func initialModel() model {
+func initialModel() *model {
 	ti := textinput.New()
 	ti.Placeholder = "Sonic Youth"
 	ti.Focus()
@@ -99,7 +99,7 @@ func initialModel() model {
 
 	li := list.New(nil, list.NewDefaultDelegate(), 0, 0)
 
-	return model{
+	return &model{
 		artist:  ti,
 		err:     nil,
 		records: nil,
@@ -109,14 +109,32 @@ func initialModel() model {
 	}
 }
 
-func (m model) Init() tea.Cmd {
+func (m *model) Init() tea.Cmd {
 	textinput.Blink()
 	return m.spinner.Tick
 }
 
-func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
+	if m.state == Searching|Fetching {
+		return m, nil
+	}
+	updateList := func(m *model, msg2 tea.Msg) tea.Cmd {
+		return func() tea.Msg {
+			m.records = getRecords(url)
+			items := make([]list.Item, len(m.records))
+			for i, record := range m.records {
+				items[i] = record
+			}
+			m.list.SetItems(items)
+			m.list.Title = "Release to fetch"
+			fmt.Println(m.list.Items()[0])
+			m.state = SelectReleases
+			_, cmd := m.list.Update(msg)
+			return cmd
+		}
 
+	}
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.Type {
@@ -124,15 +142,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case tea.KeyEnter:
 			m.state = Searching
+			return m, tea.Batch(m.spinner.Tick, updateList(m, msg))
 
-			m.records = getRecords(url)
-			items := make([]list.Item, len(m.records))
-			for i, record := range m.records {
-				items[i] = record
-			}
-			m.list.SetItems(items)
-			m.state = SelectReleases
-			return m, nil
 		default:
 			if m.state == InputArtist {
 				m.artist, cmd = m.artist.Update(msg)
@@ -148,13 +159,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case errMsg:
 		m.err = msg
 		return m, nil
+	case tea.WindowSizeMsg:
+		h, v := docStyle.GetFrameSize()
+		m.list.SetSize(msg.Width-h, msg.Height-v)
+		m.list, cmd = m.list.Update(msg)
+		return m, cmd
 	default:
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
 	}
 }
 
-func (m model) View() string {
+func (m *model) View() string {
 	switch m.state {
 	default:
 		return fmt.Sprintf(
