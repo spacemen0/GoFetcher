@@ -13,7 +13,9 @@ import (
 	"net/http"
 )
 
-const url = "https://api.discogs.com/artists/3840/releases"
+func forgeSearch(artist string) string {
+	return fmt.Sprintf(`https://api.discogs.com/database/search?q=%s&type=master&format=album&artist=%s&per_page=100&token=tgRatMaOmFfXjBwHNBlZDQtXrOAELZwpywEOCEbb`, artist, artist)
+}
 
 func getRecords(url string) []services.Record {
 	resp, err := services.SendRequest(url)
@@ -73,6 +75,7 @@ type model struct {
 	state   State
 	list    list.Model
 	spinner spinner.Model
+	choices []string
 }
 
 var docStyle = lipgloss.NewStyle().Margin(1, 2)
@@ -88,11 +91,10 @@ const (
 
 func initialModel() *model {
 	ti := textinput.New()
-	ti.Placeholder = "Sonic Youth"
 	ti.Focus()
 	ti.CharLimit = 156
 	ti.Width = 20
-
+	ti.SetValue("Sonic Youth")
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
@@ -121,14 +123,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	updateList := func(m *model, msg2 tea.Msg) tea.Cmd {
 		return func() tea.Msg {
-			m.records = getRecords(url)
+			m.records = getRecords(forgeSearch(m.artist.Value()))
 			items := make([]list.Item, len(m.records))
 			for i, record := range m.records {
 				items[i] = record
 			}
 			m.list.SetItems(items)
-			m.list.Title = "Release to fetch"
-			fmt.Println(m.list.Items()[0])
+			m.list.Title = "Press Enter to select releases"
 			m.state = SelectReleases
 			_, cmd := m.list.Update(msg)
 			return cmd
@@ -141,8 +142,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlC, tea.KeyEsc:
 			return m, tea.Quit
 		case tea.KeyEnter:
-			m.state = Searching
-			return m, tea.Batch(m.spinner.Tick, updateList(m, msg))
+			switch m.state {
+			case InputArtist:
+				m.state = Searching
+
+				return m, tea.Batch(m.spinner.Tick, updateList(m, msg))
+			case SelectReleases:
+				m.choices = append(m.choices, m.list.Items()[m.list.Cursor()].FilterValue())
+				m.list.RemoveItem(m.list.Cursor())
+				return m, nil
+			default:
+				return m, nil
+			}
 
 		default:
 			if m.state == InputArtist {
@@ -154,7 +165,6 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 			return m, nil
-
 		}
 	case errMsg:
 		m.err = msg

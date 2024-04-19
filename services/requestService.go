@@ -54,7 +54,7 @@ func DecodeJSON(resp *http.Response) (any, error) {
 func FilterMasterURLs(data any) []Record {
 	var masterUrls []Record
 
-	if releases, ok := data.(map[string]any)["releases"]; ok {
+	if releases, ok := data.(map[string]any)["results"]; ok {
 		for _, release := range releases.([]any) {
 			if releaseMap, ok := release.(map[string]any); ok {
 				if releaseMap["type"] == "master" {
