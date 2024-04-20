@@ -1,15 +1,32 @@
 package services
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
+	"mime/multipart"
 	"net/http"
 	"os"
+	"path/filepath"
 )
 
 type Record struct {
 	url   string
 	title string
+	image string
+}
+
+type Request struct {
+	Title       string
+	Genre       string
+	Additional  string
+	Description string
+	ReleaseDate string
+	ImageUrl    string
+	AuthorId    uint
+	Image       *os.File
 }
 
 func (r Record) FilterValue() string {
@@ -61,7 +78,8 @@ func FilterMasterURLs(data any) []Record {
 					masterUrls = append(masterUrls,
 						Record{
 							url:   releaseMap["resource_url"].(string),
-							title: releaseMap["title"].(string),
+							title: releaseMap["Title"].(string),
+							image: releaseMap["cover_image"].(string),
 						})
 				}
 			}
@@ -71,52 +89,93 @@ func FilterMasterURLs(data any) []Record {
 	return masterUrls
 }
 
-func ProcessMasterURLs(masterUrls []string) []any {
-	var releases []any
+func DownloadImage(url, filename string) *os.File {
+	// Send an HTTP GET request to the Image URL
+	resp, err := http.Get(url)
+	if err != nil {
+		log.Fatal()
+	}
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			log.Fatal()
+		}
+	}(resp.Body)
 
-	for _, url := range masterUrls {
-		resp, err := SendRequest(url)
+	// Create a new file to save the downloaded Image
+	file, err := os.Create(filename)
+	if err != nil {
+		log.Fatal()
+	}
+
+	// Copy the Image data from the HTTP response body to the file
+	_, err = io.Copy(file, resp.Body)
+	if err != nil {
+		err := file.Close()
+		if err != nil {
+			log.Fatal()
+		}
+		log.Fatal()
+	}
+
+	return file
+}
+
+func ProcessMasterURLs(masterUrls []Record, id uint) ([]any, []*os.File, uint) {
+	var releases []any
+	var images []*os.File
+
+	for _, record := range masterUrls {
+		resp, err := SendRequest(record.url)
 		if err != nil {
 			fmt.Println("Error:", err)
-			return nil
+			return nil, nil, id
 		}
 		data, err := DecodeJSON(resp)
 		if err != nil {
 			fmt.Println("Error:", err)
-			return nil
+			return nil, nil, id
 		}
 		releases = append(releases, data)
-
+		images = append(images, DownloadImage(record.image, record.title))
 	}
 
-	return releases
+	return releases, images, id
 }
 
-func FilterReleases(releases []any) []map[string]any {
-	filteredReleases := make([]map[string]any, 0)
+func FilterReleases(releases []any, images []*os.File, authorId uint) []Request {
+	var filteredReleases []Request
 
-	for _, release := range releases {
+	for i, release := range releases {
 		if releaseMap, ok := release.(map[string]any); ok {
 			// Create a map to store only the desired fields
-			filteredRelease := make(map[string]any)
+			filteredRelease := Request{
+				Title:       "",
+				Genre:       "",
+				Additional:  "",
+				Description: "",
+				ReleaseDate: "",
+				ImageUrl:    "placeHolder",
+				AuthorId:    authorId,
+				Image:       images[i],
+			}
 
 			// Add the desired fields to the filtered release map
-			filteredRelease["title"] = releaseMap["title"]
-			filteredRelease["year"] = releaseMap["year"]
-			filteredRelease["genre"] = releaseMap["genres"].([]any)[0]
+			filteredRelease.Title = releaseMap["Title"].(string)
+			filteredRelease.ReleaseDate = releaseMap["year"].(string) + "-01-01"
+			filteredRelease.Genre = releaseMap["genres"].([]any)[0].(string)
 			var trackInfo string
 			tracks := releaseMap["tracklist"].([]any)
 			for i, track := range tracks {
-				trackString, _ := interfaceToString(track.(map[string]any)["title"])
+				trackString, _ := interfaceToString(track.(map[string]any)["Title"])
 				trackInfo += trackString
 				if i < len(tracks)-1 {
 					trackInfo += "\n"
 				}
 			}
-			filteredRelease["additional"] = trackInfo
-			// Add other fields you want to include
+			filteredRelease.Additional = trackInfo
+			filteredRelease.Description = releaseMap["notes"].(string)
 
-			// Append the filtered release to the result
 			filteredReleases = append(filteredReleases, filteredRelease)
 		}
 	}
@@ -131,6 +190,67 @@ func interfaceToString(value any) (string, bool) {
 		return "", false // Return false indicating the conversion failed
 	}
 	return str, true // Return the string and true indicating successful conversion
+}
+
+func AddMusic(reqData Request) error {
+	url := "http://localhost:8080/medias"
+	method := "POST"
+
+	payload := &bytes.Buffer{}
+	writer := multipart.NewWriter(payload)
+
+	// Add Image file to the request if available
+	if reqData.Image != nil {
+		defer reqData.Image.Close()
+		part, err := writer.CreateFormFile("Image", filepath.Base(reqData.Image.Name()))
+		if err != nil {
+			return err
+		}
+		_, err = io.Copy(part, reqData.Image)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Add other form fields
+	_ = writer.WriteField("Title", reqData.Title)
+	_ = writer.WriteField("Genre", reqData.Genre)
+	_ = writer.WriteField("Additional", reqData.Additional)
+	_ = writer.WriteField("Description", reqData.Description)
+	_ = writer.WriteField("ReleaseDate", reqData.ReleaseDate)
+	_ = writer.WriteField("ImageUrl", reqData.ImageUrl)
+	_ = writer.WriteField("AuthorId", fmt.Sprintf("%d", reqData.AuthorId))
+
+	err := writer.Close()
+	if err != nil {
+		return err
+	}
+
+	client := &http.Client{}
+	req, err := http.NewRequest(method, url, payload)
+	if err != nil {
+		return err
+	}
+	req.Header.Add("Authorization", "Bearer <your_token_here>")
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	res, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			log.Fatal()
+		}
+	}(res.Body)
+
+	response, err := io.ReadAll(res.Body)
+	if err != nil {
+		return err
+	}
+	fmt.Println(json.MarshalIndent(response, "", ""))
+	return nil
 }
 
 func WriteToFile(value any) {

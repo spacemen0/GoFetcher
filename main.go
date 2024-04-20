@@ -44,16 +44,8 @@ func getRecords(url string) []services.Record {
 	return services.FilterMasterURLs(data)
 }
 
-func extractUrl(records []services.Record) []string {
-	var masterUrls []string
-	for _, record := range records {
-		masterUrls = append(masterUrls, record.Description())
-	}
-	return masterUrls
-}
-
 func writeRelease(masterUrls []services.Record) {
-	services.WriteToFile(services.FilterReleases(services.ProcessMasterURLs(extractUrl(masterUrls))))
+	services.FilterReleases(services.ProcessMasterURLs(masterUrls, 2))
 }
 
 func main() {
