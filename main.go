@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -44,8 +45,14 @@ func getRecords(url string) []services.Record {
 	return services.FilterMasterURLs(data)
 }
 
-func writeRelease(masterUrls []services.Record) {
-	services.FilterReleases(services.ProcessMasterURLs(masterUrls, 2))
+func doStuff(masterUrls []services.Record, authorId uint, token string) {
+	for _, req := range services.FilterReleases(services.ProcessMasterURLs(masterUrls, authorId)) {
+		err := services.AddMusic(req, token)
+		if err != nil {
+			println("panic")
+		}
+	}
+
 }
 
 func main() {
@@ -63,19 +70,24 @@ type (
 type State int8
 
 type model struct {
-	artist  textinput.Model
-	err     error
-	records []services.Record
-	state   State
-	list    list.Model
-	spinner spinner.Model
-	choices []services.Record
+	ti       textinput.Model
+	err      error
+	records  []services.Record
+	state    State
+	list     list.Model
+	spinner  spinner.Model
+	choices  []services.Record
+	authorId uint
+	token    string
+	artist   string
 }
 
 var docStyle = lipgloss.NewStyle().Margin(1, 2)
 
 const (
 	InputArtist State = iota
+	InputAuthorId
+	InputToken
 	Searching
 	SelectArtist
 	Fetching
@@ -86,9 +98,8 @@ const (
 func initialModel() *model {
 	ti := textinput.New()
 	ti.Focus()
-	ti.CharLimit = 156
+	ti.CharLimit = 1024
 	ti.Width = 20
-	ti.SetValue("Sonic Youth")
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
@@ -96,7 +107,7 @@ func initialModel() *model {
 	li := list.New(nil, list.NewDefaultDelegate(), 0, 0)
 
 	return &model{
-		artist:  ti,
+		ti:      ti,
 		err:     nil,
 		records: nil,
 		state:   InputArtist,
@@ -117,7 +128,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	updateList := func(m *model) tea.Cmd {
 		return func() tea.Msg {
-			m.records = getRecords(forgeSearch(m.artist.Value()))
+			m.records = getRecords(forgeSearch(m.artist))
 			items := make([]list.Item, len(m.records))
 			for i, record := range m.records {
 				items[i] = record
@@ -131,7 +142,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	fetchReleases := func(m *model) tea.Cmd {
 		return func() tea.Msg {
-			writeRelease(m.choices)
+			doStuff(m.choices, m.authorId, m.token)
 			m.state = Done
 			_, cmd := m.spinner.Update(spinner.TickMsg{
 				Time: time.Now(),
@@ -147,12 +158,26 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyEnter:
 			switch m.state {
 			case InputArtist:
+				m.state = InputAuthorId
+				m.artist = m.ti.Value()
+				m.ti.SetValue("")
+				return m, nil
+			case InputAuthorId:
+				m.state = InputToken
+				val, _ := strconv.Atoi(m.ti.Value())
+				m.authorId = uint(val)
+				m.ti.SetValue("")
+				return m, nil
+			case InputToken:
 				m.state = Searching
+				m.token = m.ti.Value()
+				m.ti.SetValue("")
 				return m, tea.Batch(m.spinner.Tick, updateList(m))
+
 			case SelectReleases:
-				item := m.list.Items()[m.list.Cursor()]
+				item := m.list.Items()[m.list.Index()]
 				m.choices = append(m.choices, item.(services.Record))
-				m.list.RemoveItem(m.list.Cursor())
+				m.list.RemoveItem(m.list.Index())
 				return m, nil
 			default:
 				return m, nil
@@ -160,7 +185,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeySpace:
 			switch m.state {
 			case InputArtist:
-				m.artist, cmd = m.artist.Update(msg)
+				m.ti, cmd = m.ti.Update(msg)
 				return m, cmd
 			case SelectReleases:
 				m.state = Fetching
@@ -171,15 +196,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 		default:
-			if m.state == InputArtist {
-				m.artist, cmd = m.artist.Update(msg)
+			switch m.state {
+			case InputArtist, InputToken, InputAuthorId:
+				m.ti, cmd = m.ti.Update(msg)
 				return m, cmd
-			}
-			if m.state == SelectReleases {
+			case SelectReleases:
 				m.list, cmd = m.list.Update(msg)
 				return m, cmd
+			default:
+				return m, nil
 			}
-			return m, nil
+
 		}
 	case errMsg:
 		m.err = msg
@@ -200,13 +227,25 @@ func (m *model) View() string {
 	default:
 		return fmt.Sprintf(
 			"Type the name of the artist you want to search\n\n%s\n\n%s",
-			m.artist.View(),
+			m.ti.View(),
 			"(esc to quit)",
 		) + "\n"
 	case InputArtist:
 		return fmt.Sprintf(
 			"Type the name of the artist you want to search\n\n%s\n\n%s",
-			m.artist.View(),
+			m.ti.View(),
+			"(esc to quit)",
+		) + "\n"
+	case InputAuthorId:
+		return fmt.Sprintf(
+			"Type the id of the artist\n\n%s\n\n%s",
+			m.ti.View(),
+			"(esc to quit)",
+		) + "\n"
+	case InputToken:
+		return fmt.Sprintf(
+			"Type your token\n\n%s\n\n%s",
+			m.ti.View(),
 			"(esc to quit)",
 		) + "\n"
 	case Searching:

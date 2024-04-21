@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 )
 
 type Record struct {
@@ -26,7 +28,7 @@ type Request struct {
 	ReleaseDate string
 	ImageUrl    string
 	AuthorId    uint
-	Image       *os.File
+	Image       string
 }
 
 func (r Record) FilterValue() string {
@@ -78,7 +80,7 @@ func FilterMasterURLs(data any) []Record {
 					masterUrls = append(masterUrls,
 						Record{
 							url:   releaseMap["resource_url"].(string),
-							title: releaseMap["Title"].(string),
+							title: releaseMap["title"].(string),
 							image: releaseMap["cover_image"].(string),
 						})
 				}
@@ -89,41 +91,38 @@ func FilterMasterURLs(data any) []Record {
 	return masterUrls
 }
 
-func DownloadImage(url, filename string) *os.File {
+func DownloadImage(url, filename string) (string, error) {
 	// Send an HTTP GET request to the Image URL
 	resp, err := http.Get(url)
 	if err != nil {
-		log.Fatal()
+		return "", err
 	}
-	defer func(Body io.ReadCloser) {
-		err := Body.Close()
-		if err != nil {
-			log.Fatal()
-		}
-	}(resp.Body)
-
+	defer resp.Body.Close()
 	// Create a new file to save the downloaded Image
-	file, err := os.Create(filename)
+	file, err := os.Create("images/" + filename) // Save image in images directory
 	if err != nil {
-		log.Fatal()
+		return "", err
 	}
-
 	// Copy the Image data from the HTTP response body to the file
 	_, err = io.Copy(file, resp.Body)
 	if err != nil {
-		err := file.Close()
-		if err != nil {
-			log.Fatal()
-		}
-		log.Fatal()
+		file.Close()
+		return "", err
 	}
-
-	return file
+	// Close the file
+	err = file.Close()
+	if err != nil {
+		return "", err
+	}
+	return file.Name(), nil
 }
-
-func ProcessMasterURLs(masterUrls []Record, id uint) ([]any, []*os.File, uint) {
+func sanitizeFilename(filename string) string {
+	re := regexp.MustCompile(`[\\/:*?"<>|]`)
+	return re.ReplaceAllString(filename, "_")
+}
+func ProcessMasterURLs(masterUrls []Record, id uint) ([]any, []string, uint) {
 	var releases []any
-	var images []*os.File
+	var imagePaths []string
 
 	for _, record := range masterUrls {
 		resp, err := SendRequest(record.url)
@@ -137,13 +136,18 @@ func ProcessMasterURLs(masterUrls []Record, id uint) ([]any, []*os.File, uint) {
 			return nil, nil, id
 		}
 		releases = append(releases, data)
-		images = append(images, DownloadImage(record.image, record.title))
+		imagePath, err := DownloadImage(record.image, sanitizeFilename(record.title+".jpeg"))
+		if err != nil {
+			fmt.Println("Error:", err)
+			return nil, nil, id
+		}
+		imagePaths = append(imagePaths, imagePath)
 	}
 
-	return releases, images, id
+	return releases, imagePaths, id
 }
 
-func FilterReleases(releases []any, images []*os.File, authorId uint) []Request {
+func FilterReleases(releases []any, images []string, authorId uint) []Request {
 	var filteredReleases []Request
 
 	for i, release := range releases {
@@ -161,20 +165,28 @@ func FilterReleases(releases []any, images []*os.File, authorId uint) []Request 
 			}
 
 			// Add the desired fields to the filtered release map
-			filteredRelease.Title = releaseMap["Title"].(string)
-			filteredRelease.ReleaseDate = releaseMap["year"].(string) + "-01-01"
+			filteredRelease.Title = releaseMap["title"].(string)
+			if year, ok := releaseMap["year"].(float64); ok {
+				filteredRelease.ReleaseDate = strconv.Itoa(int(year)) + "-01-01"
+			} else {
+				filteredRelease.ReleaseDate = "1900-01-01"
+			}
 			filteredRelease.Genre = releaseMap["genres"].([]any)[0].(string)
 			var trackInfo string
 			tracks := releaseMap["tracklist"].([]any)
 			for i, track := range tracks {
-				trackString, _ := interfaceToString(track.(map[string]any)["Title"])
+				trackString, _ := interfaceToString(track.(map[string]any)["title"])
 				trackInfo += trackString
 				if i < len(tracks)-1 {
 					trackInfo += "\n"
 				}
 			}
 			filteredRelease.Additional = trackInfo
-			filteredRelease.Description = releaseMap["notes"].(string)
+			if notes, ok := releaseMap["notes"].(string); ok {
+				filteredRelease.Description = notes
+			} else {
+				filteredRelease.Description = "No description available."
+			}
 
 			filteredReleases = append(filteredReleases, filteredRelease)
 		}
@@ -192,7 +204,8 @@ func interfaceToString(value any) (string, bool) {
 	return str, true // Return the string and true indicating successful conversion
 }
 
-func AddMusic(reqData Request) error {
+func AddMusic(reqData Request, token string) error {
+
 	url := "http://localhost:8080/medias"
 	method := "POST"
 
@@ -200,26 +213,44 @@ func AddMusic(reqData Request) error {
 	writer := multipart.NewWriter(payload)
 
 	// Add Image file to the request if available
-	if reqData.Image != nil {
-		defer reqData.Image.Close()
-		part, err := writer.CreateFormFile("Image", filepath.Base(reqData.Image.Name()))
+	if reqData.Image != "" {
+		// Open the image file
+		file, err := os.Open(reqData.Image)
 		if err != nil {
+			println(err)
 			return err
 		}
-		_, err = io.Copy(part, reqData.Image)
+		defer file.Close()
+
+		println(reqData.Image)
+		// Create a new form file part
+		part, err := writer.CreateFormFile("image", filepath.Base(reqData.Image))
 		if err != nil {
+			println(err)
+			return err
+		}
+
+		// Copy the image data to the form file part
+		_, err = io.Copy(part, file)
+		if err != nil {
+			println(err)
 			return err
 		}
 	}
 
 	// Add other form fields
-	_ = writer.WriteField("Title", reqData.Title)
-	_ = writer.WriteField("Genre", reqData.Genre)
-	_ = writer.WriteField("Additional", reqData.Additional)
-	_ = writer.WriteField("Description", reqData.Description)
-	_ = writer.WriteField("ReleaseDate", reqData.ReleaseDate)
-	_ = writer.WriteField("ImageUrl", reqData.ImageUrl)
-	_ = writer.WriteField("AuthorId", fmt.Sprintf("%d", reqData.AuthorId))
+	_ = writer.WriteField("title", reqData.Title)
+	_ = writer.WriteField("genre", reqData.Genre)
+	_ = writer.WriteField("additional", reqData.Additional)
+	_ = writer.WriteField("description", reqData.Description)
+	_ = writer.WriteField("releaseDate", reqData.ReleaseDate)
+	_ = writer.WriteField("imageUrl", reqData.ImageUrl)
+	_ = writer.WriteField("average", "0")
+	_ = writer.WriteField("wants", "0")
+	_ = writer.WriteField("ratings", "0")
+	_ = writer.WriteField("doings", "0")
+	_ = writer.WriteField("type", "Music")
+	_ = writer.WriteField("authorId", fmt.Sprintf("%d", reqData.AuthorId))
 
 	err := writer.Close()
 	if err != nil {
@@ -231,7 +262,7 @@ func AddMusic(reqData Request) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Add("Authorization", "Bearer <your_token_here>")
+	req.Header.Add("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 
 	res, err := client.Do(req)
@@ -245,11 +276,24 @@ func AddMusic(reqData Request) error {
 		}
 	}(res.Body)
 
-	response, err := io.ReadAll(res.Body)
+	//response, err := DecodeJSON(res)
+	//if err != nil {
+	//	return nil
+	//}
+	//
+	//// Assuming the JSON response contains a field named "title" that holds the string value
+	//titleField, ok := response.(map[string]any)["title"].(string)
+	//if !ok {
+	//	return nil
+	//}
+	//
+	//if strings.Contains(titleField, reqData.Title) {
+	//	fmt.Println("Success!")
+	//}
+
 	if err != nil {
 		return err
 	}
-	fmt.Println(json.MarshalIndent(response, "", ""))
 	return nil
 }
 
